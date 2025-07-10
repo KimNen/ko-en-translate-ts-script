@@ -1,14 +1,25 @@
-const fs = require('fs')
-const path = require('path')
-const ts = require('typescript')
+import fs from 'fs'
+import path from 'path'
+import ts from 'typescript'
 
-const baseDir = 'input_path'
-const outputFile = 'output_path/x.json'
+const baseDir = 'input'
+const outputFile = 'output'
 
-const koResult = {}
+type KoResult = {
+    [key: string]: KoResult | string
+}
+
+const koResult: KoResult = {}
 const excludeDirs = new Set(['node_modules', 'lib', 'apis', 'styles', 'utils', 'public', '.next'])
 
-function walkDir(dir, callback) {
+type Replacement = {
+    keyPath: string
+    pos: number
+    end: number
+    original: string
+}
+
+const walkDir = (dir: string, callback: (filePath: string) => void): void => {
     fs.readdirSync(dir).forEach((file) => {
         const fullPath = path.join(dir, file)
         const stat = fs.statSync(fullPath)
@@ -18,33 +29,27 @@ function walkDir(dir, callback) {
                 walkDir(fullPath, callback)
             }
         } else if (file.endsWith('.tsx')) {
-            console.log('탐색 파일:', fullPath) // 여기서 _document.tsx가 찍히는지 확인
+            console.log('탐색 파일:', fullPath)
             callback(fullPath)
         }
     })
 }
 
-// 한글 포함 여부 체크
-function containsKorean(text) {
+const containsKorean = (text: string): boolean => {
     return /[\uAC00-\uD7A3]/.test(text)
 }
 
-// 다국어 키 경로 생성
-function buildKeyPath(dirs, fileName, line, index) {
+const buildKeyPath = (dirs: string[], fileName: string, line: number, index: number): string => {
     return [...dirs, fileName].join('.') + `.line_${line + 1}_${index + 1}`
 }
 
-// 실제 파일 내 텍스트 치환 함수
-function replaceKoreanInFile(filePath, replacements) {
+const replaceKoreanInFile = (filePath: string, replacements: Replacement[]): void => {
     let content = fs.readFileSync(filePath, 'utf-8')
-
-    // 치환 위치 뒤에서 앞으로 정렬 (인덱스 밀림 방지)
     const sorted = [...replacements].sort((a, b) => b.pos - a.pos)
 
     for (const { keyPath, pos, end, original } of sorted) {
         const target = content.slice(pos, end)
         console.log(`치환 대상: "${target}" at [${pos}, ${end}) in ${filePath}`)
-
         content = content.slice(0, pos) + `{t("${keyPath}")}` + content.slice(end)
     }
 
@@ -66,23 +71,20 @@ walkDir(baseDir, (filePath) => {
         ts.ScriptKind.TSX
     )
 
-    const lineMap = new Map()
-    const replacements = []
+    const lineMap = new Map<number, { text: string; pos: number; end: number }[]>()
+    const replacements: Replacement[] = []
 
-    function addText(text, pos, end) {
+    const addText = (text: string, pos: number, end: number) => {
         if (!containsKorean(text)) return
         const { line } = sourceFile.getLineAndCharacterOfPosition(pos)
         const lineTexts = lineMap.get(line) || []
-
-        // 중복 방지 (텍스트+pos 기준)
         if (!lineTexts.some((item) => item.text === text && item.pos === pos)) {
             lineTexts.push({ text, pos, end })
             lineMap.set(line, lineTexts)
         }
     }
 
-    function visit(node) {
-        // JSX 텍스트
+    const visit = (node: ts.Node): void => {
         if (ts.isJsxText(node)) {
             const raw = node.text.trim()
             if (raw) {
@@ -91,19 +93,14 @@ walkDir(baseDir, (filePath) => {
                 addText(raw, start, end)
             }
         }
-
-        // 일반 문자열, 템플릿 리터럴(서브스티튜션 없는)
         if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
             const raw = node.text.trim()
             if (raw) {
-                // 문자열의 내부 텍스트만 정확히 잡으려면 +1, -1
                 const start = node.getStart(sourceFile) + 1
                 const end = node.getEnd() - 1
                 addText(raw, start, end)
             }
         }
-
-        // JSX 속성값 문자열 처리 (alt="경고" 등)
         if (ts.isJsxAttribute(node)) {
             const initializer = node.initializer
             if (
@@ -118,7 +115,6 @@ walkDir(baseDir, (filePath) => {
                 }
             }
         }
-
         ts.forEachChild(node, visit)
     }
 
@@ -130,10 +126,10 @@ walkDir(baseDir, (filePath) => {
             replacements.push({ original: text, keyPath, pos, end })
 
             // ko.json에 저장
-            let cur = koResult
+            let cur: KoResult = koResult
             ;[...dirs, fileName].forEach((k) => {
                 if (!cur[k]) cur[k] = {}
-                cur = cur[k]
+                cur = cur[k] as KoResult
             })
             cur[`line_${line + 1}_${i + 1}`] = text
         })
